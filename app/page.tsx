@@ -3,40 +3,57 @@ import { useState, useEffect, useRef } from 'react'
 import { createClient } from '@/utils/supabase/client'
 import Link from 'next/link'
 import { Play, Square } from 'lucide-react'
+import { useRouter } from 'next/navigation'
 
 export default function TimerPage() {
   const supabase = createClient()
+  const router = useRouter()
+
+  /* ========================================================================
+     KUMPULAN STATE & REFERENSI
+     Bagian ini menyimpan semua data sementara saat aplikasi berjalan.
+     - State (useState): Digunakan untuk data yang butuh mengubah tampilan UI (seperti angka timer).
+     - Ref (useRef): Digunakan untuk menyimpan data rahasia di latar belakang yang tidak perlu me-refresh UI.
+     ======================================================================== */
   const [isActive, setIsActive] = useState(false)
   const [elapsedTime, setElapsedTime] = useState(0)
   const [loading, setLoading] = useState(false)
   const [isMounted, setIsMounted] = useState(false)
-  
-  // State untuk fitur alarm/pengingat (dalam satuan detik)
-  // 0 berarti tidak ada alarm yang dipasang
   const [alarmLimit, setAlarmLimit] = useState<number>(0)
 
   const elapsedRef = useRef(0)
-  const alarmNotifiedRef = useRef(false) // Mencegah notifikasi muncul berulang-ulang
+  const alarmNotifiedRef = useRef(false)
 
+
+  // ==Session dan Logout====================================================
   useEffect(() => {
-    elapsedRef.current = elapsedTime
-    
-    // Cek apakah waktu yang berjalan sudah mencapai limit alarm
-    if (isActive && alarmLimit > 0 && elapsedTime >= alarmLimit && !alarmNotifiedRef.current) {
-      triggerBrowserNotification()
-      alarmNotifiedRef.current = true // Tandai bahwa user sudah diberi tahu
+    const checkUser = async () => {
+      const { data: { session } } = await supabase.auth.getSession()
+      if (!session) router.push('/login')
     }
-  }, [elapsedTime, isActive, alarmLimit])
+    checkUser()
+  }, [router, supabase])
 
-  // 1. Pengecekan saat halaman dimuat (Recovery & Izin Notifikasi)
+  const handleLogout = async () => {
+    await supabase.auth.signOut()
+    localStorage.clear()
+    router.push('/login')
+  }
+  // ========================================================================
+
+
+  /* ========================================================================
+     3. SISTEM PROTEKSI CRASH (PEMULIHAN DATA)
+     Kode di bawah ini hanya berjalan sekali saat halaman pertama kali dibuka.
+     Tugasnya mengecek localStorage: "Apakah sebelumnya ada timer yang belum 
+     sempat distop karena laptop mati mendadak?" Jika ada, selamatkan datanya!
+     ======================================================================== */
   useEffect(() => {
     setIsMounted(true)
     
-    // Meminta izin notifikasi browser jika belum pernah diatur
+    // Minta izin notifikasi browser di awal
     if (typeof window !== 'undefined' && 'Notification' in window) {
-      if (Notification.permission === 'default') {
-        Notification.requestPermission()
-      }
+      if (Notification.permission === 'default') Notification.requestPermission()
     }
 
     const savedActive = localStorage.getItem('timer_is_active') === 'true'
@@ -51,17 +68,15 @@ export default function TimerPage() {
       const timeGapSeconds = Math.floor((now - savedLastTick) / 1000)
 
       if (timeGapSeconds > 120) {
+        // Jika jeda mati > 2 menit (Dianggap Crash)
         const secondsBeforeCrash = Math.floor((savedLastTick - savedStartMs) / 1000)
         autoSaveCrashedSession(secondsBeforeCrash)
       } else {
+        // Jika jeda pendek (Cuma Refresh biasa)
         const currentElapsed = Math.floor((now - savedStartMs) / 1000)
         setElapsedTime(currentElapsed)
         setIsActive(true)
-        
-        // Jika saat ditinggal ternyata waktunya melampaui alarm, siapkan status alarm
-        if (savedAlarm > 0 && currentElapsed >= savedAlarm) {
-          alarmNotifiedRef.current = true
-        }
+        if (savedAlarm > 0 && currentElapsed >= savedAlarm) alarmNotifiedRef.current = true
       }
     }
   }, [])
@@ -69,44 +84,53 @@ export default function TimerPage() {
   const autoSaveCrashedSession = async (seconds: number) => {
     if (seconds <= 0) return
     localStorage.clear()
-    await supabase.from('screen_time').insert([
-      {
-        description: 'Sesi Baru',
-        start_time: new Date(Date.now() - seconds * 1000).toISOString(),
-        end_time: new Date().toISOString(),
-        duration_seconds: seconds,
-      }
-    ])
+    await supabase.from('screen_time').insert([{
+      description: 'Sesi Baru',
+      start_time: new Date(Date.now() - seconds * 1000).toISOString(),
+      end_time: new Date().toISOString(),
+      duration_seconds: seconds,
+    }])
   }
 
-  // Fungsi untuk memicu Notifikasi Browser
+
+  /* ========================================================================
+     4. SISTEM ALARM & NOTIFIKASI
+     Memantau waktu yang sedang berjalan. Jika target waktu alarm sudah tercapai,
+     aplikasi akan menembakkan notifikasi banner ke sistem operasi (Windows/Mac).
+     ======================================================================== */
+  useEffect(() => {
+    elapsedRef.current = elapsedTime
+    if (isActive && alarmLimit > 0 && elapsedTime >= alarmLimit && !alarmNotifiedRef.current) {
+      triggerBrowserNotification()
+      alarmNotifiedRef.current = true
+    }
+  }, [elapsedTime, isActive, alarmLimit])
+
   const triggerBrowserNotification = () => {
     if (!('Notification' in window)) return
-
     if (Notification.permission === 'granted') {
       const hours = Math.floor(alarmLimit / 3600)
       const minutes = Math.floor((alarmLimit % 3600) / 60)
       const timeText = hours > 0 ? `${hours} Jam` : `${minutes} Menit`
 
-      const notification = new Notification('⚠️ Waktu Layar Habis!', {
-        body: `Kamu sudah menggunakan layar selama ${timeText}. Waktunya istirahat sejenak demi kesehatan matamu!`,
-        icon: '/favicon.ico', // Opsional: pasang jalur icon kamu jika ada
-        tag: 'screen-time-alarm', // Mencegah spam notifikasi yang sama
-        requireInteraction: true // Notifikasi akan tetap menempel sampai ditutup user
+      new Notification('⚠️ Waktu Layar Habis!', {
+        body: `Kamu sudah menggunakan layar selama ${timeText}. Waktunya istirahat!`,
+        icon: '/favicon.ico',
+        tag: 'screen-time-alarm',
+        requireInteraction: true
       })
-
-      // Opsional: Mainkan suara alarm bawaan browser jika didukung
-      if ('vibrate' in navigator) {
-        navigator.vibrate([200, 100, 200])
-      }
+      if ('vibrate' in navigator) navigator.vibrate([200, 100, 200])
     } else if (Notification.permission !== 'denied') {
-      Notification.requestPermission().then(permission => {
-        if (permission === 'granted') triggerBrowserNotification()
-      })
+      Notification.requestPermission().then(p => p === 'granted' && triggerBrowserNotification())
     }
   }
 
-  // 2. Interval Timer Absolut (Anti-Throttling)
+
+  /* ========================================================================
+     5. MESIN TIMER UTAMA (ANTI-THROTTLING & KONTROL)
+     Ini adalah jantung aplikasinya. Menghitung detik berjalan dengan membandingkan
+     waktu saat ini dengan waktu awal (absolut). Termasuk fungsi tombol Mulai & Stop.
+     ======================================================================== */
   useEffect(() => {
     let interval: NodeJS.Timeout
     if (isActive) {
@@ -115,8 +139,7 @@ export default function TimerPage() {
 
       interval = setInterval(() => {
         const now = Date.now()
-        const actualElapsed = Math.floor((now - startMs) / 1000)
-        setElapsedTime(actualElapsed)
+        setElapsedTime(Math.floor((now - startMs) / 1000))
         localStorage.setItem('timer_last_tick', now.toString())
       }, 1000)
     }
@@ -125,7 +148,7 @@ export default function TimerPage() {
 
   const handleStart = () => {
     setIsActive(true)
-    alarmNotifiedRef.current = false // Reset status pengingat
+    alarmNotifiedRef.current = false
     const now = Date.now()
     
     localStorage.setItem('timer_start_ms', now.toString())
@@ -141,19 +164,17 @@ export default function TimerPage() {
     localStorage.clear()
 
     if (finalSeconds > 0) {
-      const { error } = await supabase.from('screen_time').insert([
-        {
-          description: 'Sesi Baru',
-          start_time: new Date(Date.now() - finalSeconds * 1000).toISOString(),
-          end_time: new Date().toISOString(),
-          duration_seconds: finalSeconds,
-        }
-      ])
+      const { error } = await supabase.from('screen_time').insert([{
+        description: 'Sesi Baru',
+        start_time: new Date(Date.now() - finalSeconds * 1000).toISOString(),
+        end_time: new Date().toISOString(),
+        duration_seconds: finalSeconds,
+      }])
       if (error) console.error(error)
     }
     setLoading(false)
     setElapsedTime(0)
-    setAlarmLimit(0) // Reset alarm setelah selesai
+    setAlarmLimit(0)
   }
 
   const formatTime = (seconds: number) => {
@@ -163,23 +184,28 @@ export default function TimerPage() {
     return `${h}:${m}:${s}`
   }
 
+
+  /* ========================================================================
+     6. ANTARMUKA PENGGUNA (UI / HTML)
+     Bagian yang menampilkan desain ke layar browser.
+     ======================================================================== */
   if (!isMounted) return null
 
   return (
-    <main className="flex flex-col items-center justify-between min-h-screen bg-black text-white py-16 px-4">
+    <main className="flex flex-col items-center justify-between min-h-screen bg-black text-white py-16 px-4 relative">
+      <button onClick={handleLogout} className="absolute top-6 right-6 text-xs tracking-widest uppercase text-gray-500 hover:text-red-500 transition-colors">
+        Keluar
+      </button>
       
-      {/* Judul Atas */}
       <h1 className="text-sm tracking-[0.3em] uppercase font-light text-gray-400">
         Screen Time Tracker
       </h1>
 
-      {/* Timer Besar */}
       <div className="flex flex-col items-center">
         <div className="text-[100px] sm:text-[140px] md:text-[180px] font-extralight tracking-tighter tabular-nums leading-none">
           {formatTime(elapsedTime)}
         </div>
 
-        {/* Pemilih Alarm Minimalis */}
         <div className="mt-4">
           <select
             value={alarmLimit}
@@ -198,33 +224,18 @@ export default function TimerPage() {
         </div>
       </div>
 
-      {/* Tombol Control */}
       <div className="flex flex-col items-center gap-12">
         {!isActive ? (
-          <button 
-            onClick={handleStart}
-            className="w-20 h-20 flex items-center justify-center bg-white text-black rounded-full hover:scale-105 transition-transform shadow-lg shadow-white/5"
-          >
+          <button onClick={handleStart} className="w-20 h-20 flex items-center justify-center bg-white text-black rounded-full hover:scale-105 transition-transform shadow-lg shadow-white/5">
             <Play size={32} fill="black" />
           </button>
         ) : (
-          <button 
-            onClick={handleStop}
-            disabled={loading}
-            className="w-20 h-20 flex items-center justify-center border-2 border-white text-white rounded-full hover:scale-105 transition-transform disabled:opacity-50"
-          >
-            {loading ? (
-              <span className="w-6 h-6 border-2 border-t-transparent border-white rounded-full animate-spin"></span>
-            ) : (
-              <Square size={32} fill="white" />
-            )}
+          <button onClick={handleStop} disabled={loading} className="w-20 h-20 flex items-center justify-center border-2 border-white text-white rounded-full hover:scale-105 transition-transform disabled:opacity-50">
+            {loading ? <span className="w-6 h-6 border-2 border-t-transparent border-white rounded-full animate-spin"></span> : <Square size={32} fill="white" />}
           </button>
         )}
 
-        <Link 
-          href="/history" 
-          className="text-xs tracking-widest uppercase text-gray-500 hover:text-white transition-colors"
-        >
+        <Link href="/history" className="text-xs tracking-widest uppercase text-gray-500 hover:text-white transition-colors">
           Lihat Riwayat
         </Link>
       </div>

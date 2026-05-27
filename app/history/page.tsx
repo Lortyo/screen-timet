@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react'
 import { createClient } from '@/utils/supabase/client'
 import Link from 'next/link'
 import { ArrowLeft, Trash2, Edit2, Check, X, Info } from 'lucide-react'
+import { useRouter } from 'next/navigation'
 
 type ScreenTime = {
   id: string
@@ -38,6 +39,7 @@ const getHealthStatus = (totalSeconds: number) => {
 
 export default function HistoryPage() {
   const supabase = createClient()
+  const router = useRouter()
   const [groupedData, setGroupedData] = useState<GroupedData>({})
   const [loading, setLoading] = useState(true)
 
@@ -45,8 +47,16 @@ export default function HistoryPage() {
   const [editValue, setEditValue] = useState('')
 
   useEffect(() => {
-    fetchHistory()
-  }, [])
+    const checkUser = async () => {
+      const { data: { session } } = await supabase.auth.getSession()
+      if (!session) {
+        router.push('/login')
+      } else {
+        fetchHistory() // Panggil riwayat HANYA jika sudah dipastikan login
+      }
+    }
+    checkUser()
+  }, [router, supabase])
 
   const fetchHistory = async () => {
     setLoading(true)
