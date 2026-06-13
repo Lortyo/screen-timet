@@ -139,11 +139,16 @@ export default function HistoryPage() {
     <main className="min-h-screen bg-black text-white p-6 md:p-12 font-light">
       <div className="max-w-3xl mx-auto">
         
-        <div className="flex justify-between items-center mb-8">
+        <div className="flex justify-between items-center mb-8 border-b border-gray-900 pb-6">
           <Link href="/" className="flex items-center gap-2 text-sm text-gray-400 hover:text-white transition">
             <ArrowLeft size={16} /> Kembali ke Timer
           </Link>
-          <h1 className="text-sm tracking-[0.3em] uppercase text-gray-500">Riwayat</h1>
+          <div className="flex items-center gap-6">
+            <Link href="/summary" className="text-xs tracking-widest uppercase text-blue-500 hover:text-blue-400 transition">
+              Lihat Ringkasan Mingguan &rarr;
+            </Link>
+            <h1 className="text-sm tracking-[0.3em] uppercase text-gray-500">Riwayat</h1>
+          </div>
         </div>
 
         {/* Info Legend Card */}

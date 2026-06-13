@@ -10,10 +10,7 @@ export default function TimerPage() {
   const router = useRouter()
 
   /* ========================================================================
-     KUMPULAN STATE & REFERENSI
-     Bagian ini menyimpan semua data sementara saat aplikasi berjalan.
-     - State (useState): Digunakan untuk data yang butuh mengubah tampilan UI (seperti angka timer).
-     - Ref (useRef): Digunakan untuk menyimpan data rahasia di latar belakang yang tidak perlu me-refresh UI.
+     1. KUMPULAN STATE & REFERENSI
      ======================================================================== */
   const [isActive, setIsActive] = useState(false)
   const [elapsedTime, setElapsedTime] = useState(0)
@@ -24,8 +21,9 @@ export default function TimerPage() {
   const elapsedRef = useRef(0)
   const alarmNotifiedRef = useRef(false)
 
-
-  // ==Session dan Logout====================================================
+  /* ========================================================================
+     2. MANAJEMEN AKUN & PENGAMANAN LOGOUT
+     ======================================================================== */
   useEffect(() => {
     const checkUser = async () => {
       const { data: { session } } = await supabase.auth.getSession()
@@ -35,23 +33,54 @@ export default function TimerPage() {
   }, [router, supabase])
 
   const handleLogout = async () => {
+    const finalSeconds = elapsedRef.current
+    if (isActive && finalSeconds > 0) {
+      await supabase.from('screen_time').insert([{
+        description: 'Sesi Baru (Tersimpan otomatis saat Logout)',
+        start_time: new Date(Date.now() - finalSeconds * 1000).toISOString(),
+        end_time: new Date().toISOString(),
+        duration_seconds: finalSeconds,
+      }])
+    }
     await supabase.auth.signOut()
     localStorage.clear()
     router.push('/login')
   }
-  // ========================================================================
-
 
   /* ========================================================================
-     3. SISTEM PROTEKSI CRASH (PEMULIHAN DATA)
-     Kode di bawah ini hanya berjalan sekali saat halaman pertama kali dibuka.
-     Tugasnya mengecek localStorage: "Apakah sebelumnya ada timer yang belum 
-     sempat distop karena laptop mati mendadak?" Jika ada, selamatkan datanya!
+     3. SISTEM AUTO-STOP (DETEKTOR MODE SLEEP LINTAS WAKTU)
+     Fungsi baru ini akan dipanggil jika terdeteksi jeda waktu yang tidak wajar
+     ======================================================================== */
+  const handleAutoStopSleep = async (seconds: number, endMs: number) => {
+    if (seconds <= 0) {
+      localStorage.clear()
+      setIsActive(false)
+      return
+    }
+    
+    // Matikan timer dan bersihkan memori di awal agar tidak looping
+    setIsActive(false)
+    localStorage.clear()
+    setElapsedTime(0)
+    setAlarmLimit(0)
+
+    const { error } = await supabase.from('screen_time').insert([{
+      description: 'Sesi Baru (Berhenti Otomatis - Laptop Sleep/Mati)',
+      start_time: new Date(endMs - seconds * 1000).toISOString(),
+      end_time: new Date(endMs).toISOString(), // Menggunakan waktu tepat SEBELUM laptop tertidur
+      duration_seconds: seconds,
+    }])
+    
+    if (!error) {
+      alert('Laptop terdeteksi Sleep atau tab ditutup. Timer telah dihentikan otomatis dan datamu berhasil disimpan!')
+    }
+  }
+
+  /* ========================================================================
+     4. PEMULIHAN AWAL (SAAT HALAMAN BARU DIBUKA)
      ======================================================================== */
   useEffect(() => {
     setIsMounted(true)
-    
-    // Minta izin notifikasi browser di awal
     if (typeof window !== 'undefined' && 'Notification' in window) {
       if (Notification.permission === 'default') Notification.requestPermission()
     }
@@ -67,12 +96,10 @@ export default function TimerPage() {
       const now = Date.now()
       const timeGapSeconds = Math.floor((now - savedLastTick) / 1000)
 
-      if (timeGapSeconds > 120) {
-        // Jika jeda mati > 2 menit (Dianggap Crash)
-        const secondsBeforeCrash = Math.floor((savedLastTick - savedStartMs) / 1000)
-        autoSaveCrashedSession(secondsBeforeCrash)
+      if (timeGapSeconds > 60) { // Batas Toleransi Sleep: 60 Detik
+        const secondsBeforeSleep = Math.floor((savedLastTick - savedStartMs) / 1000)
+        handleAutoStopSleep(secondsBeforeSleep, savedLastTick)
       } else {
-        // Jika jeda pendek (Cuma Refresh biasa)
         const currentElapsed = Math.floor((now - savedStartMs) / 1000)
         setElapsedTime(currentElapsed)
         setIsActive(true)
@@ -81,22 +108,8 @@ export default function TimerPage() {
     }
   }, [])
 
-  const autoSaveCrashedSession = async (seconds: number) => {
-    if (seconds <= 0) return
-    localStorage.clear()
-    await supabase.from('screen_time').insert([{
-      description: 'Sesi Baru',
-      start_time: new Date(Date.now() - seconds * 1000).toISOString(),
-      end_time: new Date().toISOString(),
-      duration_seconds: seconds,
-    }])
-  }
-
-
   /* ========================================================================
-     4. SISTEM ALARM & NOTIFIKASI
-     Memantau waktu yang sedang berjalan. Jika target waktu alarm sudah tercapai,
-     aplikasi akan menembakkan notifikasi banner ke sistem operasi (Windows/Mac).
+     5. SISTEM ALARM & NOTIFIKASI BROWSER
      ======================================================================== */
   useEffect(() => {
     elapsedRef.current = elapsedTime
@@ -125,11 +138,8 @@ export default function TimerPage() {
     }
   }
 
-
   /* ========================================================================
-     5. MESIN TIMER UTAMA (ANTI-THROTTLING & KONTROL)
-     Ini adalah jantung aplikasinya. Menghitung detik berjalan dengan membandingkan
-     waktu saat ini dengan waktu awal (absolut). Termasuk fungsi tombol Mulai & Stop.
+     6. MESIN TIMER UTAMA (DENGAN DETEKTOR MODE SLEEP LANGSUNG)
      ======================================================================== */
   useEffect(() => {
     let interval: NodeJS.Timeout
@@ -139,8 +149,22 @@ export default function TimerPage() {
 
       interval = setInterval(() => {
         const now = Date.now()
-        setElapsedTime(Math.floor((now - startMs) / 1000))
-        localStorage.setItem('timer_last_tick', now.toString())
+        const lastTickStr = localStorage.getItem('timer_last_tick')
+        const lastTick = lastTickStr ? parseInt(lastTickStr, 10) : now
+
+        const gapSeconds = Math.floor((now - lastTick) / 1000)
+
+        // LOGIKA BARU: Jika timer sedang jalan tapi tiba-tiba ada jeda > 60 detik antar detak 
+        // (Artinya laptop baru saja bangun dari Sleep)
+        if (gapSeconds > 60) {
+          clearInterval(interval) // Hentikan hitungan saat ini juga
+          const finalSeconds = Math.floor((lastTick - startMs) / 1000)
+          handleAutoStopSleep(finalSeconds, lastTick) // Tembak fungsi simpan otomatis
+        } else {
+          const actualElapsed = Math.floor((now - startMs) / 1000)
+          setElapsedTime(actualElapsed)
+          localStorage.setItem('timer_last_tick', now.toString())
+        }
       }, 1000)
     }
     return () => clearInterval(interval)
@@ -184,13 +208,11 @@ export default function TimerPage() {
     return `${h}:${m}:${s}`
   }
 
-
-  /* ========================================================================
-     6. ANTARMUKA PENGGUNA (UI / HTML)
-     Bagian yang menampilkan desain ke layar browser.
-     ======================================================================== */
   if (!isMounted) return null
 
+  /* ========================================================================
+     7. ANTARMUKA PENGGUNA (UI / HTML)
+     ======================================================================== */
   return (
     <main className="flex flex-col items-center justify-between min-h-screen bg-black text-white py-16 px-4 relative">
       <button onClick={handleLogout} className="absolute top-6 right-6 text-xs tracking-widest uppercase text-gray-500 hover:text-red-500 transition-colors">
