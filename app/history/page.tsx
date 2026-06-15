@@ -76,7 +76,7 @@ export default function HistoryPage() {
 
   const groupAndSetData = (data: ScreenTime[]) => {
     const grouped = data.reduce((acc: GroupedData, curr: ScreenTime) => {
-      const dateStr = new Date(curr.created_at).toLocaleDateString('id-ID', {
+      const dateStr = new Date(curr.start_time).toLocaleDateString('id-ID', {
         weekday: 'long',
         day: 'numeric',
         month: 'long',
