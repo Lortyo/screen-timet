@@ -81,9 +81,6 @@ export default function TimerPage() {
      ======================================================================== */
   useEffect(() => {
     setIsMounted(true)
-    if (typeof window !== 'undefined' && 'Notification' in window) {
-      if (Notification.permission === 'default') Notification.requestPermission()
-    }
 
     const savedActive = localStorage.getItem('timer_is_active') === 'true'
     const savedLastTick = parseInt(localStorage.getItem('timer_last_tick') || '0', 10)
@@ -174,6 +171,10 @@ export default function TimerPage() {
     setIsActive(true)
     alarmNotifiedRef.current = false
     const now = Date.now()
+
+    if (typeof window !== 'undefined' && 'Notification' in window) {
+      if (Notification.permission === 'default') Notification.requestPermission()
+    }
     
     localStorage.setItem('timer_start_ms', now.toString())
     localStorage.setItem('timer_is_active', 'true')
