@@ -5,6 +5,11 @@ import { useRouter } from 'next/navigation'
 import { ArrowRight, Loader2 } from 'lucide-react'
 
 export default function LoginPage() {
+  /* ========================================================================
+     1. KUMPULAN STATE & ROUTING
+     Bagian ini menyimpan status mode form (Login atau Register), data input 
+     pengguna (email dan password), status loading, dan pesan error.
+     ======================================================================== */
   const [isLoginMode, setIsLoginMode] = useState(true)
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -14,7 +19,11 @@ export default function LoginPage() {
   const router = useRouter()
   const supabase = createClient()
 
-  // Jika user tiba-tiba membuka /login tapi ternyata sudah punya sesi aktif, lempar ke Timer
+  /* ========================================================================
+     2. PROTEKSI HALAMAN (AUTO-REDIRECT)
+     Jika pengguna sudah memiliki sesi login yang aktif dan mencoba mengakses
+     halaman /login, mereka akan langsung dialihkan ke halaman utama (Timer).
+     ======================================================================== */
   useEffect(() => {
     const checkSession = async () => {
       const { data: { session } } = await supabase.auth.getSession()
@@ -23,31 +32,38 @@ export default function LoginPage() {
     checkSession()
   }, [router, supabase])
 
+  /* ========================================================================
+     3. LOGIKA FORM SUBMIT (LOGIN & REGISTER)
+     Menangani proses autentikasi ke Supabase saat form disubmit.
+     Membedakan alur eksekusi berdasarkan mode form saat ini (isLoginMode).
+     ======================================================================== */
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     setLoading(true)
-    setErrorMsg('') // Reset error sebelumnya
+    setErrorMsg('') // Reset pesan error sebelum percobaan baru
 
     if (isLoginMode) {
-      // PROSES LOGIN
+      // ---> ALUR MASUK (LOGIN)
       const { error } = await supabase.auth.signInWithPassword({ email, password })
       if (error) {
         setErrorMsg('Email atau password salah.')
         setLoading(false)
       } else {
-        router.push('/')
+        router.push('/') // Berhasil login, arahkan ke Timer
       }
     } else {
-      // PROSES DAFTAR (REGISTER)
+      // ---> ALUR DAFTAR (REGISTER)
       const { data, error } = await supabase.auth.signUp({ email, password })
       if (error) {
         setErrorMsg(error.message)
         setLoading(false)
       } else {
-        // Jika setting verifikasi email Supabase dimatikan, user langsung otomatis login
+        // Jika verifikasi email (Confirm Email) di Supabase dinonaktifkan,
+        // pengguna baru akan langsung mendapatkan sesi dan otomatis login.
         if (data.session) {
           router.push('/')
         } else {
+          // Jika verifikasi email aktif, minta pengguna untuk login manual.
           setIsLoginMode(true)
           setErrorMsg('Pendaftaran berhasil! Silakan masuk.')
         }
@@ -55,18 +71,21 @@ export default function LoginPage() {
     }
   }
 
+  /* ========================================================================
+     4. ANTARMUKA PENGGUNA (UI / HTML)
+     ======================================================================== */
   return (
     <main className="min-h-screen bg-black flex flex-col justify-center items-center p-6 font-light">
       <div className="w-full max-w-sm">
         
-        {/* Branding Kecil di Atas */}
+        {/* === Header Branding === */}
         <div className="text-center mb-12">
           <h2 className="text-xs tracking-[0.3em] uppercase text-gray-500">
             Screen Time Tracker
           </h2>
         </div>
 
-        {/* Judul Form */}
+        {/* === Judul & Deskripsi Form === */}
         <h1 className="text-3xl font-extralight text-white mb-2 tracking-wide">
           {isLoginMode ? 'Selamat Datang' : 'Buat Akun'}
         </h1>
@@ -76,7 +95,7 @@ export default function LoginPage() {
             : 'Mulai melacak waktu layar dan jaga kesehatanmu.'}
         </p>
 
-        {/* Notifikasi Error (Ganti Alert Browser) */}
+        {/* === Kotak Notifikasi Error/Sukses === */}
         {errorMsg && (
           <div className={`mb-6 p-3 text-sm border rounded ${
             errorMsg.includes('berhasil') 
@@ -87,6 +106,7 @@ export default function LoginPage() {
           </div>
         )}
         
+        {/* === Form Input === */}
         <form onSubmit={handleSubmit} className="flex flex-col gap-5">
           <div>
             <input
@@ -106,6 +126,7 @@ export default function LoginPage() {
               onChange={(e) => setPassword(e.target.value)}
               className="w-full bg-transparent text-white px-4 py-3 rounded outline-none border border-gray-800 focus:border-gray-400 transition placeholder:text-gray-700"
               required
+              minLength={6}
             />
           </div>
           
@@ -125,14 +146,14 @@ export default function LoginPage() {
           </button>
         </form>
 
-        {/* Tombol Toggle Mode (Login/Register) */}
+        {/* === Tombol Toggle Mode (Login/Register) === */}
         <div className="mt-8 text-center">
           <p className="text-sm text-gray-500">
             {isLoginMode ? 'Belum punya akun?' : 'Sudah punya akun?'}
             <button 
               onClick={() => {
                 setIsLoginMode(!isLoginMode)
-                setErrorMsg('') // Bersihkan error jika user ganti mode
+                setErrorMsg('') // Bersihkan pesan error saat ganti mode
               }}
               className="ml-2 text-white hover:underline underline-offset-4"
             >

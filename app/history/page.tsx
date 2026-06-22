@@ -5,12 +5,17 @@ import Link from 'next/link'
 import { ArrowLeft, Trash2, Edit2, Check, X, Info } from 'lucide-react'
 import { useRouter } from 'next/navigation'
 
+/* ========================================================================
+   1. DEFINISI TIPE DATA & LOGIKA KESEHATAN MEDIS
+   Bagian ini mendefinisikan bentuk data yang akan diterima dari database 
+   serta fungsi untuk mengkategorikan status kesehatan berdasarkan durasi.
+   ======================================================================== */
 type ScreenTime = {
   id: string
   description: string
   duration_seconds: number
-  start_time: string  // Tambah kolom ini ke tipe data
-  end_time: string    // Tambah kolom ini ke tipe data
+  start_time: string  
+  end_time: string    
   created_at: string
 }
 
@@ -21,7 +26,7 @@ type GroupedData = {
   }
 }
 
-const LIMIT_SECONDS = 6 * 3600 // Batas 6 Jam
+const LIMIT_SECONDS = 6 * 3600 // Batas 6 Jam (Bisa disesuaikan jika perlu)
 
 const getHealthStatus = (totalSeconds: number) => {
   const hours = totalSeconds / 3600
@@ -40,12 +45,23 @@ const getHealthStatus = (totalSeconds: number) => {
 export default function HistoryPage() {
   const supabase = createClient()
   const router = useRouter()
+
+  /* ========================================================================
+     2. KUMPULAN STATE 
+     Menyimpan data riwayat yang sudah dikelompokkan, status loading, 
+     dan data untuk fitur edit teks deskripsi.
+     ======================================================================== */
   const [groupedData, setGroupedData] = useState<GroupedData>({})
   const [loading, setLoading] = useState(true)
 
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editValue, setEditValue] = useState('')
 
+  /* ========================================================================
+     3. MANAJEMEN AKUN & PENGAMBILAN DATA DARI DATABASE
+     Mengecek status login terlebih dahulu. Jika aman, langsung tarik semua 
+     data riwayat pengguna dari Supabase.
+     ======================================================================== */
   useEffect(() => {
     const checkUser = async () => {
       const { data: { session } } = await supabase.auth.getSession()
@@ -63,7 +79,7 @@ export default function HistoryPage() {
     const { data, error } = await supabase
       .from('screen_time')
       .select('*')
-      .order('created_at', { ascending: false })
+      .order('created_at', { ascending: false }) // Urutkan dari yang terbaru ke terlama
 
     if (error) {
       console.error(error)
@@ -74,8 +90,14 @@ export default function HistoryPage() {
     groupAndSetData(data as ScreenTime[])
   }
 
+  /* ========================================================================
+     4. LOGIKA PENGELOMPOKAN DATA (GROUPING)
+     Mengubah list data yang panjang menjadi kelompok-kelompok berdasarkan 
+     tanggal (misal: "Senin, 10 Mei 2026") dan menjumlahkan total detiknya.
+     ======================================================================== */
   const groupAndSetData = (data: ScreenTime[]) => {
     const grouped = data.reduce((acc: GroupedData, curr: ScreenTime) => {
+      // Menggunakan start_time agar sesi tengah malam tetap masuk ke hari sebelumnya
       const dateStr = new Date(curr.start_time).toLocaleDateString('id-ID', {
         weekday: 'long',
         day: 'numeric',
@@ -94,20 +116,28 @@ export default function HistoryPage() {
     setLoading(false)
   }
 
+  /* ========================================================================
+     5. FUNGSI EDIT & HAPUS DATA (CRUD)
+     ======================================================================== */
   const handleDelete = async (id: string) => {
     const confirmDelete = confirm('Hapus riwayat ini?')
     if (!confirmDelete) return
     await supabase.from('screen_time').delete().eq('id', id)
-    fetchHistory() 
+    fetchHistory() // Tarik ulang data terbaru setelah dihapus
   }
 
   const handleEditSave = async (id: string) => {
     if (!editValue.trim()) return
     await supabase.from('screen_time').update({ description: editValue }).eq('id', id)
-    setEditingId(null)
-    fetchHistory()
+    setEditingId(null) // Tutup mode edit
+    fetchHistory()     // Tarik ulang data terbaru
   }
 
+  /* ========================================================================
+     6. FUNGSI FORMATTING (WAKTU & DURASI)
+     Mengubah angka detik atau string ISO dari database menjadi format teks 
+     yang enak dibaca manusia.
+     ======================================================================== */
   const formatHours = (seconds: number) => `${(seconds / 3600).toFixed(1)} Jam`
   
   const formatDuration = (seconds: number) => {
@@ -118,7 +148,6 @@ export default function HistoryPage() {
     return `${m}m ${s}s`
   }
 
-  // Fungsi Baru: Mengubah tanggal ISO Supabase menjadi Format Jam Digital (HH:MM)
   const formatClockTime = (isoString: string) => {
     return new Date(isoString).toLocaleTimeString('id-ID', {
       hour: '2-digit',
@@ -127,6 +156,9 @@ export default function HistoryPage() {
     })
   }
 
+  /* ========================================================================
+     7. ANTARMUKA PENGGUNA (UI / HTML)
+     ======================================================================== */
   if (loading) {
     return (
       <div className="min-h-screen bg-black flex items-center justify-center text-gray-500">
@@ -139,6 +171,7 @@ export default function HistoryPage() {
     <main className="min-h-screen bg-black text-white p-6 md:p-12 font-light">
       <div className="max-w-3xl mx-auto">
         
+        {/* Header & Navigasi */}
         <div className="flex justify-between items-center mb-8 border-b border-gray-900 pb-6">
           <Link href="/" className="flex items-center gap-2 text-sm text-gray-400 hover:text-white transition">
             <ArrowLeft size={16} /> Kembali ke Timer
@@ -151,7 +184,7 @@ export default function HistoryPage() {
           </div>
         </div>
 
-        {/* Info Legend Card */}
+        {/* Info Legend Card (Keterangan Warna Kesehatan) */}
         <div className="mb-12 border border-gray-800 rounded-lg p-4 bg-gray-900/20">
           <div className="flex items-center gap-2 mb-3 text-gray-400">
             <Info size={16} />
@@ -165,11 +198,13 @@ export default function HistoryPage() {
           </div>
         </div>
 
+        {/* Daftar Kelompok Data Berdasarkan Tanggal */}
         {Object.entries(groupedData).map(([date, group]) => {
           const status = getHealthStatus(group.totalSeconds)
 
           return (
             <div key={date} className="mb-12">
+              {/* Judul Tanggal & Total Durasi Harian */}
               <div className="flex justify-between items-end border-b border-gray-800 pb-4 mb-4">
                 <h2 className="text-lg md:text-xl font-normal tracking-wide text-gray-200">{date}</h2>
                 <div className="text-right flex items-center gap-4">
@@ -180,10 +215,12 @@ export default function HistoryPage() {
                 </div>
               </div>
 
+              {/* Rincian Setiap Sesi di Hari Tersebut */}
               <div className="space-y-1">
                 {group.entries.map((entry) => (
                   <div key={entry.id} className="group flex flex-col md:flex-row md:items-center justify-between py-3 px-2 rounded hover:bg-gray-900/50 transition">
                     
+                    {/* Bagian Kiri: Deskripsi & Rentang Jam */}
                     <div className="flex-1 mb-2 md:mb-0 pr-4">
                       {editingId === entry.id ? (
                         <div className="flex items-center gap-2">
@@ -207,7 +244,6 @@ export default function HistoryPage() {
                           <span className="text-sm md:text-base text-gray-300 group-hover:text-white transition">
                             {entry.description}
                           </span>
-                          {/* Tampilan Jam Mulai s.d Selesai yang Baru */}
                           <span className="text-[11px] font-mono text-gray-500 bg-gray-900/40 px-1.5 py-0.5 rounded w-max">
                             {formatClockTime(entry.start_time)} — {formatClockTime(entry.end_time)}
                           </span>
@@ -215,6 +251,7 @@ export default function HistoryPage() {
                       )}
                     </div>
 
+                    {/* Bagian Kanan: Durasi & Tombol Aksi (Edit/Hapus) */}
                     <div className="flex items-center justify-between md:justify-end gap-6">
                       <span className="text-sm font-mono text-gray-400">{formatDuration(entry.duration_seconds)}</span>
                       
@@ -243,6 +280,7 @@ export default function HistoryPage() {
           )
         })}
         
+        {/* Tampilan Jika Data Riwayat Masih Kosong */}
         {Object.keys(groupedData).length === 0 && (
           <div className="text-center text-sm tracking-widest text-gray-600 uppercase mt-20">
             Belum ada data terekam
