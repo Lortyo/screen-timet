@@ -126,7 +126,7 @@ export default function LoginPage() {
               onChange={(e) => setPassword(e.target.value)}
               className="w-full bg-transparent text-white px-4 py-3 rounded outline-none border border-gray-800 focus:border-gray-400 transition placeholder:text-gray-700"
               required
-              minLength={6}
+              minLength={5}
             />
           </div>
           
