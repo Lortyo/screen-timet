@@ -1,5 +1,5 @@
 'use client'
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { createClient } from '@/utils/supabase/client'
 import Link from 'next/link'
 import { Play, Square } from 'lucide-react'
@@ -20,6 +20,111 @@ export default function TimerPage() {
 
   const elapsedRef = useRef(0)
   const alarmNotifiedRef = useRef(false)
+  const autoStopTriggeredRef = useRef(false)
+  const notificationRef = useRef<Notification | null>(null)
+
+  /* ========================================================================
+     HELPER FUNCTIONS (Diurutkan di atas agar aman digunakan di bawahnya)
+     ======================================================================== */
+
+  const updateElapsedTime = useCallback((newElapsed: number) => {
+    setElapsedTime(newElapsed)
+    elapsedRef.current = newElapsed
+  }, [])
+
+  const clearTimerStorage = useCallback(() => {
+    try {
+      localStorage.removeItem('timer_is_active')
+      localStorage.removeItem('timer_last_tick')
+      localStorage.removeItem('timer_start_ms')
+      localStorage.removeItem('timer_alarm_limit')
+    } catch (e) {
+      console.error('Failed to clear localStorage:', e)
+    }
+  }, [])
+
+  const splitSessionsByMidnight = useCallback((startTime: Date, endTime: Date, baseDescription: string) => {
+    const records = []
+
+    if (endTime <= startTime) {
+      console.error('Invalid time range: endTime must be after startTime', { startTime, endTime })
+      return []
+    }
+
+    let currentStart = new Date(startTime)
+    const finalEnd = new Date(endTime)
+
+    let partNumber = 1
+    const needsSplit = currentStart.toDateString() !== finalEnd.toDateString()
+    const MAX_ITERATIONS = 366 // Safety: max 1 tahun
+
+    let iterations = 0
+    while (currentStart < finalEnd && iterations < MAX_ITERATIONS) {
+      iterations++
+
+      const nextMidnight = new Date(currentStart)
+      nextMidnight.setDate(nextMidnight.getDate() + 1)
+      nextMidnight.setHours(0, 0, 0, 0)
+
+      const currentEnd = nextMidnight > finalEnd ? finalEnd : nextMidnight
+      const durationSeconds = Math.floor((currentEnd.getTime() - currentStart.getTime()) / 1000)
+
+      if (durationSeconds > 0) {
+        records.push({
+          // ✅ FIXED: Menghapus tanda minus (-) aneh dan menyatukan string dengan benar
+          description: needsSplit ? `${baseDescription} - Bagian ${partNumber}` : baseDescription,
+          start_time: currentStart.toISOString(),
+          end_time: currentEnd.toISOString(),
+          duration_seconds: durationSeconds,
+        })
+        partNumber++
+      }
+
+      currentStart = new Date(currentEnd)
+    }
+
+    if (iterations >= MAX_ITERATIONS) {
+      console.error('splitSessionsByMidnight exceeded max iterations')
+    }
+
+    return records
+  }, [])
+
+  const handleAutoStopSleep = useCallback(async (seconds: number, endMs: number) => {
+    if (autoStopTriggeredRef.current) {
+      console.warn('Auto-stop sudah dipanggil, skip untuk mencegah duplikasi')
+      return
+    }
+
+    if (seconds <= 0) {
+      clearTimerStorage()
+      setIsActive(false)
+      return
+    }
+
+    autoStopTriggeredRef.current = true
+    setIsActive(false)
+    clearTimerStorage()
+    updateElapsedTime(0)
+    setAlarmLimit(0)
+
+    const endTime = new Date(endMs)
+    const startTime = new Date(endMs - seconds * 1000)
+
+    const records = splitSessionsByMidnight(startTime, endTime, 'Sesi Baru (Berhenti Otomatis - Laptop Sleep/Mati)')
+    const { error } = await supabase.from('screen_time').insert(records)
+
+    if (error) {
+      console.error('Failed to save auto-stop session:', error)
+      alert('Gagal menyimpan data. Error: ' + error.message)
+      autoStopTriggeredRef.current = false
+    } else {
+      alert('Laptop terdeteksi Sleep atau tab ditutup. Timer telah dihentikan otomatis dan datamu berhasil disimpan!')
+      setTimeout(() => {
+        autoStopTriggeredRef.current = false
+      }, 1000)
+    }
+  }, [clearTimerStorage, updateElapsedTime, splitSessionsByMidnight, supabase])
 
   /* ========================================================================
      2. MANAJEMEN AKUN & PENGAMANAN LOGOUT
@@ -32,101 +137,40 @@ export default function TimerPage() {
     checkUser()
   }, [router, supabase])
 
-  const handleLogout = async () => {
+  useEffect(() => {
+    return () => {
+      if (notificationRef.current) {
+        notificationRef.current.close()
+        notificationRef.current = null
+      }
+    }
+  }, [])
+
+  const handleLogout = useCallback(async () => {
     const finalSeconds = elapsedRef.current
     if (isActive && finalSeconds > 0) {
       const endTime = new Date()
       const startTime = new Date(endTime.getTime() - finalSeconds * 1000)
 
       const records = splitSessionsByMidnight(startTime, endTime, 'Sesi Baru (Tersimpan otomatis saat Logout)')
+      const { error } = await supabase.from('screen_time').insert(records)
 
-      for (const record of records) {
-        await supabase.from('screen_time').insert([record])
-      }
-    }
-    await supabase.auth.signOut()
-    localStorage.clear()
-    router.push('/login')
-  }
-
-  /* ========================================================================
-     3. SISTEM AUTO-STOP (DETEKTOR MODE SLEEP LINTAS WAKTU)
-     Fungsi baru ini akan dipanggil jika terdeteksi jeda waktu yang tidak wajar
-     ======================================================================== */
-  const handleAutoStopSleep = async (seconds: number, endMs: number) => {
-    if (seconds <= 0) {
-      localStorage.clear()
-      setIsActive(false)
-      return
-    }
-
-    // Matikan timer dan bersihkan memori di awal agar tidak looping
-    setIsActive(false)
-    localStorage.clear()
-    setElapsedTime(0)
-    setAlarmLimit(0)
-
-    const endTime = new Date(endMs)
-    const startTime = new Date(endMs - seconds * 1000)
-
-    // Pisahkan sesi yang melewati tengah malam (bisa multiple hari)
-    const records = splitSessionsByMidnight(startTime, endTime, 'Sesi Baru (Berhenti Otomatis - Laptop Sleep/Mati)')
-
-    let hasError = false
-    for (const record of records) {
-      const { error } = await supabase.from('screen_time').insert([record])
       if (error) {
-        console.error(error)
-        hasError = true
+        console.error('Failed to save on logout:', error)
+        const shouldLogout = confirm('Gagal menyimpan data timer. Tetap logout?')
+        if (!shouldLogout) return
       }
     }
 
-    if (!hasError) {
-      alert('Laptop terdeteksi Sleep atau tab ditutup. Timer telah dihentikan otomatis dan datamu berhasil disimpan!')
-    }
-  }
-
-  /* ========================================================================
-     3b. FUNGSI PEMISAH SESI MELEWATI TENGAH MALAM (UNIVERSAL)
-     Fungsi ini memisahkan sesi yang melewati satu atau lebih tengah malam
-     menjadi beberapa record terpisah per hari
-     ======================================================================== */
-  const splitSessionsByMidnight = (startTime: Date, endTime: Date, baseDescription: string) => {
-    const records = []
-
-    // Buat copy agar tidak memodifikasi objek asli
-    let currentStart = new Date(startTime)
-    const finalEnd = new Date(endTime)
-
-    let partNumber = 1
-    const needsSplit = currentStart.toDateString() !== finalEnd.toDateString()
-
-    while (currentStart < finalEnd) {
-      // Cari tengah malam berikutnya (00:00 besok)
-      const nextMidnight = new Date(currentStart)
-      nextMidnight.setHours(24, 0, 0, 0) // Tengah malam besok
-
-      // Tentukan end untuk record ini
-      const currentEnd = nextMidnight > finalEnd ? finalEnd : nextMidnight
-
-      // Hitung durasi
-      const durationSeconds = Math.floor((currentEnd.getTime() - currentStart.getTime()) / 1000)
-
-      // Buat record
-      records.push({
-        description: needsSplit ? `${baseDescription} - Bagian ${partNumber}` : baseDescription,
-        start_time: currentStart.toISOString(),
-        end_time: currentEnd.toISOString(),
-        duration_seconds: durationSeconds,
-      })
-
-      // Pindah ke hari berikutnya
-      currentStart = new Date(currentEnd)
-      partNumber++
+    if (notificationRef.current) {
+      notificationRef.current.close()
+      notificationRef.current = null
     }
 
-    return records
-  }
+    await supabase.auth.signOut()
+    clearTimerStorage()
+    router.push('/login')
+  }, [isActive, splitSessionsByMidnight, clearTimerStorage, supabase, router])
 
   /* ========================================================================
      4. PEMULIHAN AWAL (SAAT HALAMAN BARU DIBUKA)
@@ -139,60 +183,96 @@ export default function TimerPage() {
     const savedStartMs = parseInt(localStorage.getItem('timer_start_ms') || '0', 10)
     const savedAlarm = parseInt(localStorage.getItem('timer_alarm_limit') || '0', 10)
 
+    const now = Date.now()
+    const TWO_YEARS_MS = 2 * 365 * 24 * 60 * 60 * 1000
+    const isValidTimestamp = (ts: number) => {
+      if (ts <= 0) return false
+      if (ts > now) return false
+      if (now - ts > TWO_YEARS_MS) return false
+      return true
+    }
+
+    if (savedActive && (!isValidTimestamp(savedStartMs) || !isValidTimestamp(savedLastTick))) {
+      console.warn('Invalid localStorage timestamps detected, clearing timer data')
+      clearTimerStorage()
+      return
+    }
+
     if (savedAlarm > 0) setAlarmLimit(savedAlarm)
 
     if (savedActive && savedLastTick > 0 && savedStartMs > 0) {
-      const now = Date.now()
       const timeGapSeconds = Math.floor((now - savedLastTick) / 1000)
 
-      if (timeGapSeconds > 60) { // Batas Toleransi Sleep: 60 Detik
+      if (timeGapSeconds > 60) {
         const secondsBeforeSleep = Math.floor((savedLastTick - savedStartMs) / 1000)
         handleAutoStopSleep(secondsBeforeSleep, savedLastTick)
       } else {
         const currentElapsed = Math.floor((now - savedStartMs) / 1000)
-        setElapsedTime(currentElapsed)
+        updateElapsedTime(currentElapsed)
         setIsActive(true)
         if (savedAlarm > 0 && currentElapsed >= savedAlarm) alarmNotifiedRef.current = true
       }
     }
-  }, [])
+  }, [clearTimerStorage, handleAutoStopSleep, updateElapsedTime])
 
   /* ========================================================================
      5. SISTEM ALARM & NOTIFIKASI BROWSER
      ======================================================================== */
-  useEffect(() => {
-    elapsedRef.current = elapsedTime
-    if (isActive && alarmLimit > 0 && elapsedTime >= alarmLimit && !alarmNotifiedRef.current) {
-      triggerBrowserNotification()
-      alarmNotifiedRef.current = true
+  const triggerBrowserNotification = useCallback(() => {
+    if (notificationRef.current) {
+      notificationRef.current.close()
     }
-  }, [elapsedTime, isActive, alarmLimit])
 
-  const triggerBrowserNotification = () => {
     if (!('Notification' in window)) return
+
     if (Notification.permission === 'granted') {
       const hours = Math.floor(alarmLimit / 3600)
       const minutes = Math.floor((alarmLimit % 3600) / 60)
       const timeText = hours > 0 ? `${hours} Jam` : `${minutes} Menit`
 
-      new Notification('⚠️ Waktu Layar Habis!', {
+      notificationRef.current = new Notification('⚠️ Waktu Layar Habis!', {
         body: `Kamu sudah menggunakan layar selama ${timeText}. Waktunya istirahat!`,
         icon: '/favicon.ico',
         tag: 'screen-time-alarm',
         requireInteraction: true
       })
-      if ('vibrate' in navigator) navigator.vibrate([200, 100, 200])
+
+      setTimeout(() => {
+        if (notificationRef.current) {
+          notificationRef.current.close()
+          notificationRef.current = null
+        }
+      }, 30000)
+
+      if ('vibrate' in navigator) {
+        try {
+          navigator.vibrate([200, 100, 200])
+        } catch (e) {
+          console.warn('Vibration API failed:', e)
+        }
+      }
     } else if (Notification.permission !== 'denied') {
-      Notification.requestPermission().then(p => p === 'granted' && triggerBrowserNotification())
+      Notification.requestPermission().catch(e => {
+        console.warn('Failed to request notification permission:', e)
+      })
     }
-  }
+  }, [alarmLimit])
+
+  useEffect(() => {
+    elapsedRef.current = elapsedTime 
+    if (isActive && alarmLimit > 0 && elapsedTime >= alarmLimit && !alarmNotifiedRef.current) {
+      triggerBrowserNotification()
+      alarmNotifiedRef.current = true
+    }
+  }, [elapsedTime, isActive, alarmLimit, triggerBrowserNotification])
 
   /* ========================================================================
-     6. MESIN TIMER UTAMA (DENGAN DETEKTOR MODE SLEEP LANGSUNG)
-     + DETEKSI TAB VISIBILITY UNTUK MENCEGAH TIMER "MATI TIBA-TIBA"
+     6. MESIN TIMER UTAMA & DETEKSI TAB VISIBILITY
      ======================================================================== */
   useEffect(() => {
     let interval: NodeJS.Timeout
+    let lastRealTime = Date.now() 
+
     if (isActive) {
       const startMsStr = localStorage.getItem('timer_start_ms')
       const startMs = startMsStr ? parseInt(startMsStr, 10) : Date.now()
@@ -203,31 +283,49 @@ export default function TimerPage() {
         const lastTick = lastTickStr ? parseInt(lastTickStr, 10) : now
 
         const gapSeconds = Math.floor((now - lastTick) / 1000)
+        const realTimeDiff = Math.abs(now - lastRealTime)
 
-        // LOGIKA BARU: Jika timer sedang jalan tapi tiba-tiba ada jeda > 60 detik antar detak
-        // (Artinya laptop baru saja bangun dari Sleep)
+        if (realTimeDiff < 500 || realTimeDiff > 2000) {
+          console.warn(`Clock adjustment detected! Real diff: ${realTimeDiff}ms`)
+          const actualElapsed = Math.floor((now - startMs) / 1000)
+          if (actualElapsed >= 0) { 
+            updateElapsedTime(actualElapsed)
+            localStorage.setItem('timer_last_tick', now.toString())
+          }
+          lastRealTime = now
+          return
+        }
+
         if (gapSeconds > 60) {
-          clearInterval(interval) // Hentikan hitungan saat ini juga
+          clearInterval(interval)
           const finalSeconds = Math.floor((lastTick - startMs) / 1000)
-          handleAutoStopSleep(finalSeconds, lastTick) // Tembak fungsi simpan otomatis
+          handleAutoStopSleep(finalSeconds, lastTick)
+        } else if (gapSeconds < 0) {
+          console.warn('Negative gap detected, recalculating from start_ms')
+          const actualElapsed = Math.floor((now - startMs) / 1000)
+          if (actualElapsed >= 0) {
+            updateElapsedTime(actualElapsed)
+            localStorage.setItem('timer_last_tick', now.toString())
+          }
         } else {
           const actualElapsed = Math.floor((now - startMs) / 1000)
-          setElapsedTime(actualElapsed)
+          updateElapsedTime(actualElapsed)
           localStorage.setItem('timer_last_tick', now.toString())
         }
+
+        lastRealTime = now
       }, 1000)
     }
-    return () => clearInterval(interval)
-  }, [isActive])
+    return () => {
+      if (interval) clearInterval(interval)
+    }
+  }, [isActive, handleAutoStopSleep, updateElapsedTime])
 
-  /* ========================================================================
-     6b. DETEKSI TAB VISIBILITY & PAGE FOCUS
-     Untuk menangani kasus tab yang di-suspend browser atau tidak aktif lama
-     ======================================================================== */
   useEffect(() => {
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible' && isActive) {
-        // Tab kembali terlihat, cek apakah ada gap waktu
+        if (autoStopTriggeredRef.current) return
+
         const savedStartMs = parseInt(localStorage.getItem('timer_start_ms') || '0', 10)
         const savedLastTick = parseInt(localStorage.getItem('timer_last_tick') || '0', 10)
         const now = Date.now()
@@ -235,15 +333,13 @@ export default function TimerPage() {
         if (savedLastTick > 0 && savedStartMs > 0) {
           const gapSeconds = Math.floor((now - savedLastTick) / 1000)
 
-          // Jika gap > 60 detik, berarti tab di-suspend atau ada masalah
           if (gapSeconds > 60) {
             console.warn(`Tab suspended terdeteksi! Gap: ${gapSeconds} detik`)
             const finalSeconds = Math.floor((savedLastTick - savedStartMs) / 1000)
             handleAutoStopSleep(finalSeconds, savedLastTick)
           } else {
-            // Update elapsed time dengan waktu yang sebenarnya
             const actualElapsed = Math.floor((now - savedStartMs) / 1000)
-            setElapsedTime(actualElapsed)
+            updateElapsedTime(actualElapsed)
             localStorage.setItem('timer_last_tick', now.toString())
           }
         }
@@ -251,15 +347,13 @@ export default function TimerPage() {
     }
 
     const handlePageFocus = () => {
-      // Sama seperti visibility change, tapi untuk window focus
-      if (isActive) {
+      if (isActive && !autoStopTriggeredRef.current) {
         const savedStartMs = parseInt(localStorage.getItem('timer_start_ms') || '0', 10)
-        const savedLastTick = parseInt(localStorage.getItem('timer_last_tick') || '0', 10)
         const now = Date.now()
 
-        if (savedLastTick > 0 && savedStartMs > 0) {
+        if (savedStartMs > 0) {
           const actualElapsed = Math.floor((now - savedStartMs) / 1000)
-          setElapsedTime(actualElapsed)
+          updateElapsedTime(actualElapsed) 
         }
       }
     }
@@ -271,17 +365,18 @@ export default function TimerPage() {
       document.removeEventListener('visibilitychange', handleVisibilityChange)
       window.removeEventListener('focus', handlePageFocus)
     }
-  }, [isActive])
+  }, [isActive, handleAutoStopSleep, updateElapsedTime]) 
 
   const handleStart = () => {
     setIsActive(true)
     alarmNotifiedRef.current = false
+    autoStopTriggeredRef.current = false 
     const now = Date.now()
 
     if (typeof window !== 'undefined' && 'Notification' in window) {
       if (Notification.permission === 'default') Notification.requestPermission()
     }
-    
+
     localStorage.setItem('timer_start_ms', now.toString())
     localStorage.setItem('timer_is_active', 'true')
     localStorage.setItem('timer_last_tick', now.toString())
@@ -289,10 +384,17 @@ export default function TimerPage() {
   }
 
   const handleStop = async () => {
+    if (loading) return 
+
     setIsActive(false)
     setLoading(true)
     const finalSeconds = elapsedRef.current
-    localStorage.clear()
+    clearTimerStorage()
+
+    if (notificationRef.current) {
+      notificationRef.current.close()
+      notificationRef.current = null
+    }
 
     if (finalSeconds > 0) {
       const endTime = new Date()
@@ -300,14 +402,22 @@ export default function TimerPage() {
 
       const records = splitSessionsByMidnight(startTime, endTime, 'Sesi Baru')
 
-      for (const record of records) {
-        const { error } = await supabase.from('screen_time').insert([record])
-        if (error) console.error(error)
+      const { error } = await supabase.from('screen_time').insert(records)
+
+      if (error) {
+        console.error('Failed to save session:', error)
+        alert('Gagal menyimpan data. Error: ' + error.message)
+        setIsActive(true)
+        setLoading(false)
+        return
       }
     }
+
     setLoading(false)
-    setElapsedTime(0)
+    updateElapsedTime(0)
     setAlarmLimit(0)
+    autoStopTriggeredRef.current = false 
+    alarmNotifiedRef.current = false
   }
 
   const formatTime = (seconds: number) => {

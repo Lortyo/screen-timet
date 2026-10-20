@@ -1,5 +1,5 @@
 'use client'
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useCallback } from 'react'
 import { createClient } from '@/utils/supabase/client'
 import Link from 'next/link'
 import { ArrowLeft, Trash2, Edit2, Check, X, Info } from 'lucide-react'
@@ -7,8 +7,6 @@ import { useRouter } from 'next/navigation'
 
 /* ========================================================================
    1. DEFINISI TIPE DATA & LOGIKA KESEHATAN MEDIS
-   Bagian ini mendefinisikan bentuk data yang akan diterima dari database 
-   serta fungsi untuk mengkategorikan status kesehatan berdasarkan durasi.
    ======================================================================== */
 type ScreenTime = {
   id: string
@@ -25,8 +23,6 @@ type GroupedData = {
     totalSeconds: number
   }
 }
-
-const LIMIT_SECONDS = 6 * 3600 // Batas 6 Jam (Bisa disesuaikan jika perlu)
 
 const getHealthStatus = (totalSeconds: number) => {
   const hours = totalSeconds / 3600
@@ -48,8 +44,6 @@ export default function HistoryPage() {
 
   /* ========================================================================
      2. KUMPULAN STATE 
-     Menyimpan data riwayat yang sudah dikelompokkan, status loading, 
-     dan data untuk fitur edit teks deskripsi.
      ======================================================================== */
   const [groupedData, setGroupedData] = useState<GroupedData>({})
   const [loading, setLoading] = useState(true)
@@ -58,46 +52,11 @@ export default function HistoryPage() {
   const [editValue, setEditValue] = useState('')
 
   /* ========================================================================
-     3. MANAJEMEN AKUN & PENGAMBILAN DATA DARI DATABASE
-     Mengecek status login terlebih dahulu. Jika aman, langsung tarik semua 
-     data riwayat pengguna dari Supabase.
-     ======================================================================== */
-  useEffect(() => {
-    const checkUser = async () => {
-      const { data: { session } } = await supabase.auth.getSession()
-      if (!session) {
-        router.push('/login')
-      } else {
-        fetchHistory() // Panggil riwayat HANYA jika sudah dipastikan login
-      }
-    }
-    checkUser()
-  }, [router, supabase])
-
-  const fetchHistory = async () => {
-    setLoading(true)
-    const { data, error } = await supabase
-      .from('screen_time')
-      .select('*')
-      .order('created_at', { ascending: false }) // Urutkan dari yang terbaru ke terlama
-
-    if (error) {
-      console.error(error)
-      setLoading(false)
-      return
-    }
-
-    groupAndSetData(data as ScreenTime[])
-  }
-
-  /* ========================================================================
      4. LOGIKA PENGELOMPOKAN DATA (GROUPING)
-     Mengubah list data yang panjang menjadi kelompok-kelompok berdasarkan
-     tanggal (misal: "Senin, 10 Mei 2026") dan menjumlahkan total detiknya.
+     (Dipindah ke atas agar bisa digunakan oleh useCallback fetchHistory)
      ======================================================================== */
-  const groupAndSetData = (data: ScreenTime[]) => {
+  const groupAndSetData = useCallback((data: ScreenTime[]) => {
     const grouped = data.reduce((acc: GroupedData, curr: ScreenTime) => {
-      // Menggunakan start_time agar sesi tengah malam tetap masuk ke hari sebelumnya
       const dateStr = new Date(curr.start_time).toLocaleDateString('id-ID', {
         weekday: 'long',
         day: 'numeric',
@@ -112,7 +71,6 @@ export default function HistoryPage() {
       return acc
     }, {})
 
-    // Urutkan entries di setiap grup berdasarkan start_time (ascending - dari pagi ke malam)
     Object.keys(grouped).forEach(dateKey => {
       grouped[dateKey].entries.sort((a, b) =>
         new Date(a.start_time).getTime() - new Date(b.start_time).getTime()
@@ -121,21 +79,62 @@ export default function HistoryPage() {
 
     setGroupedData(grouped)
     setLoading(false)
-  }
+  }, [])
+
+  /* ========================================================================
+     3. MANAJEMEN AKUN & PENGAMBILAN DATA DARI DATABASE
+     ======================================================================== */
+  const fetchHistory = useCallback(async () => {
+    setLoading(true)
+    const { data, error } = await supabase
+      .from('screen_time')
+      .select('*')
+      .order('created_at', { ascending: false })
+
+    if (error) {
+      console.error(error)
+      setLoading(false)
+      return
+    }
+
+    groupAndSetData(data as ScreenTime[])
+  }, [supabase, groupAndSetData])
+
+  useEffect(() => {
+    const checkUser = async () => {
+      const { data: { session } } = await supabase.auth.getSession()
+      if (!session) {
+        router.push('/login')
+      } else {
+        fetchHistory()
+      }
+    }
+    checkUser()
+  }, [router, supabase, fetchHistory])
 
   /* ========================================================================
      4b. FUNGSI HITUNG JEDA ANTAR SESI
      ======================================================================== */
-  const calculateGap = (prevEndTime: string, nextStartTime: string) => {
-    const prevEnd = new Date(prevEndTime).getTime()
-    const nextStart = new Date(nextStartTime).getTime()
+  const calculateGap = (prevEntry: ScreenTime, nextEntry: ScreenTime) => {
+    const prevEnd = new Date(prevEntry.end_time).getTime()
+    const nextStart = new Date(nextEntry.start_time).getTime()
     const gapMs = nextStart - prevEnd
 
-    // Jika gap kurang dari 1 menit, anggap tidak ada jeda
+    const isSplitSession = (
+      // Tambahan opsional chain (?.) untuk menghindari error jika deskripsi undefined/null
+      (prevEntry.description?.includes('Bagian') && nextEntry.description?.includes('Bagian')) ||
+      (prevEnd === nextStart) || 
+      (Math.abs(gapMs) < 1000) 
+    )
+
+    if (isSplitSession) return null
+    if (gapMs < 0) {
+      console.warn('Negative gap detected:', { prevEntry, nextEntry, gapMs })
+      return null
+    }
     if (gapMs < 60000) return null
 
-    const gapSeconds = Math.floor(gapMs / 1000)
-    return gapSeconds
+    return Math.floor(gapMs / 1000)
   }
 
   /* ========================================================================
@@ -144,38 +143,81 @@ export default function HistoryPage() {
   const handleDelete = async (id: string) => {
     const confirmDelete = confirm('Hapus riwayat ini?')
     if (!confirmDelete) return
-    await supabase.from('screen_time').delete().eq('id', id)
-    fetchHistory() // Tarik ulang data terbaru setelah dihapus
+
+    const { error } = await supabase.from('screen_time').delete().eq('id', id)
+
+    if (error) {
+      console.error('Delete failed:', error)
+      alert('Gagal menghapus data. Error: ' + error.message)
+      return
+    }
+
+    fetchHistory()
   }
 
   const handleEditSave = async (id: string) => {
-    if (!editValue.trim()) return
-    await supabase.from('screen_time').update({ description: editValue }).eq('id', id)
-    setEditingId(null) // Tutup mode edit
-    fetchHistory()     // Tarik ulang data terbaru
+    if (!editValue.trim()) {
+      alert('Deskripsi tidak boleh kosong')
+      return
+    }
+
+    const { error } = await supabase.from('screen_time').update({ description: editValue }).eq('id', id)
+
+    if (error) {
+      console.error('Update failed:', error)
+      alert('Gagal menyimpan perubahan. Error: ' + error.message)
+      return
+    }
+
+    setEditingId(null)
+    fetchHistory() 
   }
 
   /* ========================================================================
      6. FUNGSI FORMATTING (WAKTU & DURASI)
-     Mengubah angka detik atau string ISO dari database menjadi format teks 
-     yang enak dibaca manusia.
      ======================================================================== */
-  const formatHours = (seconds: number) => `${(seconds / 3600).toFixed(1)} Jam`
-  
+  const formatHours = (seconds: number) => {
+    const hours = seconds / 3600
+    if (hours < 1) {
+      return `${Math.round(seconds / 60)} Menit`
+    }
+    return `${hours.toFixed(1)} Jam`
+  }
+
   const formatDuration = (seconds: number) => {
+    if (seconds === 0) return '0 detik'
+
     const h = Math.floor(seconds / 3600)
     const m = Math.floor((seconds % 3600) / 60)
     const s = seconds % 60
     if (h > 0) return `${h}h ${m}m`
-    return `${m}m ${s}s`
+    if (m > 0) return `${m}m ${s}s`
+    return `${s}s`
   }
 
   const formatClockTime = (isoString: string) => {
-    return new Date(isoString).toLocaleTimeString('id-ID', {
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: false
-    })
+    try {
+      const date = new Date(isoString)
+      if (isNaN(date.getTime())) {
+        return 'Invalid Time'
+      }
+      return date.toLocaleTimeString('id-ID', {
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false
+      })
+    } catch (e) {
+      console.error('Invalid date string:', isoString)
+      return 'Invalid Time'
+    }
+  }
+
+  const cleanDescription = (desc: string) => {
+    return desc?.replace(/\s*-\s*Bagian\s+\d+\s*$/, '') || ''
+  }
+
+  const isSplitPart = (desc: string) => {
+    return /\s*-\s*Bagian\s+\d+\s*$/.test(desc || '')
   }
 
   /* ========================================================================
@@ -206,7 +248,7 @@ export default function HistoryPage() {
           </div>
         </div>
 
-        {/* Info Legend Card (Keterangan Warna Kesehatan) */}
+        {/* Info Legend Card */}
         <div className="mb-12 border border-gray-800 rounded-lg p-4 bg-gray-900/20">
           <div className="flex items-center gap-2 mb-3 text-gray-400">
             <Info size={16} />
@@ -222,117 +264,4 @@ export default function HistoryPage() {
 
         {/* Daftar Kelompok Data Berdasarkan Tanggal */}
         {Object.entries(groupedData).map(([date, group]) => {
-          const status = getHealthStatus(group.totalSeconds)
-
-          return (
-            <div key={date} className="mb-12">
-              {/* Judul Tanggal & Total Durasi Harian */}
-              <div className="flex justify-between items-end border-b border-gray-800 pb-4 mb-4">
-                <h2 className="text-lg md:text-xl font-normal tracking-wide text-gray-200">{date}</h2>
-                <div className="text-right flex items-center gap-4">
-                  <p className="text-sm md:text-base font-mono text-gray-400">{formatHours(group.totalSeconds)}</p>
-                  <span className={`text-[10px] tracking-widest uppercase border ${status.border} ${status.color} ${status.bg} px-2 py-1 rounded`}>
-                    {status.label}
-                  </span>
-                </div>
-              </div>
-
-              {/* Rincian Setiap Sesi di Hari Tersebut */}
-              <div className="space-y-1">
-                {group.entries.map((entry, index) => (
-                  <div key={entry.id}>
-                    {/* Tampilkan GAP/JEDA jika ada sesi sebelumnya */}
-                    {index > 0 && (() => {
-                      const prevEntry = group.entries[index - 1]
-                      const gapSeconds = calculateGap(prevEntry.end_time, entry.start_time)
-
-                      if (gapSeconds) {
-                        return (
-                          <div className="flex items-center py-2 px-2 text-xs text-gray-600">
-                            <div className="w-[2px] h-8 bg-gray-800 mr-4"></div>
-                            <div className="flex items-center gap-3">
-                              <span className="text-gray-500">Jeda {formatDuration(gapSeconds)}</span>
-                              <span className="text-[11px] font-mono text-gray-700">
-                                {formatClockTime(prevEntry.end_time)} — {formatClockTime(entry.start_time)}
-                              </span>
-                            </div>
-                          </div>
-                        )
-                      }
-                      return null
-                    })()}
-
-                    {/* Card Sesi */}
-                    <div className="group flex flex-col md:flex-row md:items-center justify-between py-3 px-2 rounded hover:bg-gray-900/50 transition">
-
-                    {/* Bagian Kiri: Deskripsi & Rentang Jam */}
-                    <div className="flex-1 mb-2 md:mb-0 pr-4">
-                      {editingId === entry.id ? (
-                        <div className="flex items-center gap-2">
-                          <input
-                            type="text"
-                            value={editValue}
-                            onChange={(e) => setEditValue(e.target.value)}
-                            className="bg-gray-800 text-white text-sm px-3 py-1 rounded outline-none border border-gray-700 w-full focus:border-gray-500"
-                            autoFocus
-                            onKeyDown={(e) => e.key === 'Enter' && handleEditSave(entry.id)}
-                          />
-                          <button onClick={() => handleEditSave(entry.id)} className="text-green-500 hover:text-green-400 p-1">
-                            <Check size={18} />
-                          </button>
-                          <button onClick={() => setEditingId(null)} className="text-red-500 hover:text-red-400 p-1">
-                            <X size={18} />
-                          </button>
-                        </div>
-                      ) : (
-                        <div className="flex flex-col sm:flex-row sm:items-center gap-1 sm:gap-4">
-                          <span className="text-sm md:text-base text-gray-300 group-hover:text-white transition">
-                            {entry.description}
-                          </span>
-                          <span className="text-[11px] font-mono text-gray-500 bg-gray-900/40 px-1.5 py-0.5 rounded w-max">
-                            {formatClockTime(entry.start_time)} — {formatClockTime(entry.end_time)}
-                          </span>
-                        </div>
-                      )}
-                    </div>
-
-                    {/* Bagian Kanan: Durasi & Tombol Aksi (Edit/Hapus) */}
-                    <div className="flex items-center justify-between md:justify-end gap-6">
-                      <span className="text-sm font-mono text-gray-400">{formatDuration(entry.duration_seconds)}</span>
-
-                      <div className="flex items-center gap-3 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity">
-                        {editingId !== entry.id && (
-                          <button
-                            onClick={() => {
-                              setEditingId(entry.id)
-                              setEditValue(entry.description)
-                            }}
-                            className="text-gray-500 hover:text-white transition"
-                          >
-                            <Edit2 size={16} />
-                          </button>
-                        )}
-                        <button onClick={() => handleDelete(entry.id)} className="text-gray-500 hover:text-red-500 transition">
-                          <Trash2 size={16} />
-                        </button>
-                      </div>
-                    </div>
-
-                  </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )
-        })}
-        
-        {/* Tampilan Jika Data Riwayat Masih Kosong */}
-        {Object.keys(groupedData).length === 0 && (
-          <div className="text-center text-sm tracking-widest text-gray-600 uppercase mt-20">
-            Belum ada data terekam
-          </div>
-        )}
-      </div>
-    </main>
-  )
-}
+          const status =
