@@ -53,7 +53,6 @@ export default function HistoryPage() {
 
   /* ========================================================================
      4. LOGIKA PENGELOMPOKAN DATA (GROUPING)
-     (Dipindah ke atas agar bisa digunakan oleh useCallback fetchHistory)
      ======================================================================== */
   const groupAndSetData = useCallback((data: ScreenTime[]) => {
     const grouped = data.reduce((acc: GroupedData, curr: ScreenTime) => {
@@ -121,7 +120,6 @@ export default function HistoryPage() {
     const gapMs = nextStart - prevEnd
 
     const isSplitSession = (
-      // Tambahan opsional chain (?.) untuk menghindari error jika deskripsi undefined/null
       (prevEntry.description?.includes('Bagian') && nextEntry.description?.includes('Bagian')) ||
       (prevEnd === nextStart) || 
       (Math.abs(gapMs) < 1000) 
@@ -264,4 +262,120 @@ export default function HistoryPage() {
 
         {/* Daftar Kelompok Data Berdasarkan Tanggal */}
         {Object.entries(groupedData).map(([date, group]) => {
-          const status =
+          const status = getHealthStatus(group.totalSeconds)
+
+          return (
+            <div key={date} className="mb-12">
+              {/* Judul Tanggal & Total Durasi Harian */}
+              <div className="flex justify-between items-end border-b border-gray-800 pb-4 mb-4">
+                <h2 className="text-lg md:text-xl font-normal tracking-wide text-gray-200">{date}</h2>
+                <div className="text-right flex items-center gap-4">
+                  <p className="text-sm md:text-base font-mono text-gray-400">{formatHours(group.totalSeconds)}</p>
+                  <span className={`text-[10px] tracking-widest uppercase border ${status.border} ${status.color} ${status.bg} px-2 py-1 rounded`}>
+                    {status.label}
+                  </span>
+                </div>
+              </div>
+
+              {/* Rincian Setiap Sesi */}
+              <div className="space-y-1">
+                {group.entries.map((entry, index) => (
+                  <div key={entry.id}>
+                    {/* Tampilkan GAP/JEDA */}
+                    {index > 0 && (() => {
+                      const prevEntry = group.entries[index - 1]
+                      const gapSeconds = calculateGap(prevEntry, entry)
+
+                      if (gapSeconds) {
+                        return (
+                          <div className="flex items-center py-2 px-2 text-xs text-gray-600">
+                            <div className="w-[2px] h-8 bg-gray-800 mr-4"></div>
+                            <div className="flex items-center gap-3">
+                              <span className="text-gray-500">Jeda {formatDuration(gapSeconds)}</span>
+                              <span className="text-[11px] font-mono text-gray-700">
+                                {formatClockTime(prevEntry.end_time)} — {formatClockTime(entry.start_time)}
+                              </span>
+                            </div>
+                          </div>
+                        )
+                      }
+                      return null
+                    })()}
+
+                    {/* Card Sesi */}
+                    <div className="group flex flex-col md:flex-row md:items-center justify-between py-3 px-2 rounded hover:bg-gray-900/50 transition">
+                      <div className="flex-1 mb-2 md:mb-0 pr-4">
+                        {editingId === entry.id ? (
+                          <div className="flex items-center gap-2">
+                            <input
+                              type="text"
+                              value={editValue}
+                              onChange={(e) => setEditValue(e.target.value)}
+                              className="bg-gray-800 text-white text-sm px-3 py-1 rounded outline-none border border-gray-700 w-full focus:border-gray-500"
+                              autoFocus
+                              onKeyDown={(e) => e.key === 'Enter' && handleEditSave(entry.id)}
+                            />
+                            <button onClick={() => handleEditSave(entry.id)} className="text-green-500 hover:text-green-400 p-1">
+                              <Check size={18} />
+                            </button>
+                            <button onClick={() => setEditingId(null)} className="text-red-500 hover:text-red-400 p-1">
+                              <X size={18} />
+                            </button>
+                          </div>
+                        ) : (
+                          <div className="flex flex-col sm:flex-row sm:items-center gap-1 sm:gap-4">
+                            <div className="flex items-center gap-2">
+                              <span className="text-sm md:text-base text-gray-300 group-hover:text-white transition">
+                                {cleanDescription(entry.description)}
+                              </span>
+                              {isSplitPart(entry.description) && (
+                                <span className="text-[10px] text-blue-500 bg-blue-950/30 border border-blue-900 px-1.5 py-0.5 rounded">
+                                  SPLIT
+                                </span>
+                              )}
+                            </div>
+                            <span className="text-[11px] font-mono text-gray-500 bg-gray-900/40 px-1.5 py-0.5 rounded w-max">
+                              {formatClockTime(entry.start_time)} — {formatClockTime(entry.end_time)}
+                            </span>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Bagian Kanan: Durasi & Tombol Aksi */}
+                      <div className="flex items-center justify-between md:justify-end gap-6">
+                        <span className="text-sm font-mono text-gray-400">{formatDuration(entry.duration_seconds)}</span>
+                        <div className="flex items-center gap-3 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity">
+                          {editingId !== entry.id && (
+                            <button
+                              onClick={() => {
+                                setEditingId(entry.id)
+                                setEditValue(entry.description)
+                              }}
+                              className="text-gray-500 hover:text-white transition"
+                            >
+                              <Edit2 size={16} />
+                            </button>
+                          )}
+                          <button onClick={() => handleDelete(entry.id)} className="text-gray-500 hover:text-red-500 transition">
+                            <Trash2 size={16} />
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )
+        })}
+        
+        {/* Tampilan Jika Data Riwayat Masih Kosong */}
+        {Object.keys(groupedData).length === 0 && (
+          <div className="text-center text-sm tracking-widest text-gray-600 uppercase mt-20">
+            Belum ada data terekam
+          </div>
+        )}
+      </div>
+    </main>
+  )
+}
