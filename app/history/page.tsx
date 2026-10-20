@@ -248,11 +248,11 @@ export default function HistoryPage() {
 
                       if (gapSeconds) {
                         return (
-                          <div className="flex items-center justify-center py-2 my-1">
-                            <div className="flex items-center gap-3 text-xs text-gray-600 bg-gray-900/30 px-4 py-1.5 rounded-full border border-gray-800">
-                              <span className="text-gray-500">⏸</span>
-                              <span>Jeda: {formatDuration(gapSeconds)}</span>
-                              <span className="text-[10px] font-mono text-gray-700">
+                          <div className="flex items-center py-2 px-2 text-xs text-gray-600">
+                            <div className="w-[2px] h-8 bg-gray-800 mr-4"></div>
+                            <div className="flex items-center gap-3">
+                              <span className="text-gray-500">Jeda {formatDuration(gapSeconds)}</span>
+                              <span className="text-[11px] font-mono text-gray-700">
                                 {formatClockTime(prevEntry.end_time)} — {formatClockTime(entry.start_time)}
                               </span>
                             </div>
