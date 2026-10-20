@@ -92,7 +92,7 @@ export default function HistoryPage() {
 
   /* ========================================================================
      4. LOGIKA PENGELOMPOKAN DATA (GROUPING)
-     Mengubah list data yang panjang menjadi kelompok-kelompok berdasarkan 
+     Mengubah list data yang panjang menjadi kelompok-kelompok berdasarkan
      tanggal (misal: "Senin, 10 Mei 2026") dan menjumlahkan total detiknya.
      ======================================================================== */
   const groupAndSetData = (data: ScreenTime[]) => {
@@ -106,14 +106,36 @@ export default function HistoryPage() {
       })
 
       if (!acc[dateStr]) acc[dateStr] = { entries: [], totalSeconds: 0 }
-      
+
       acc[dateStr].entries.push(curr)
       acc[dateStr].totalSeconds += curr.duration_seconds
       return acc
     }, {})
 
+    // Urutkan entries di setiap grup berdasarkan start_time (ascending - dari pagi ke malam)
+    Object.keys(grouped).forEach(dateKey => {
+      grouped[dateKey].entries.sort((a, b) =>
+        new Date(a.start_time).getTime() - new Date(b.start_time).getTime()
+      )
+    })
+
     setGroupedData(grouped)
     setLoading(false)
+  }
+
+  /* ========================================================================
+     4b. FUNGSI HITUNG JEDA ANTAR SESI
+     ======================================================================== */
+  const calculateGap = (prevEndTime: string, nextStartTime: string) => {
+    const prevEnd = new Date(prevEndTime).getTime()
+    const nextStart = new Date(nextStartTime).getTime()
+    const gapMs = nextStart - prevEnd
+
+    // Jika gap kurang dari 1 menit, anggap tidak ada jeda
+    if (gapMs < 60000) return null
+
+    const gapSeconds = Math.floor(gapMs / 1000)
+    return gapSeconds
   }
 
   /* ========================================================================
@@ -217,9 +239,32 @@ export default function HistoryPage() {
 
               {/* Rincian Setiap Sesi di Hari Tersebut */}
               <div className="space-y-1">
-                {group.entries.map((entry) => (
-                  <div key={entry.id} className="group flex flex-col md:flex-row md:items-center justify-between py-3 px-2 rounded hover:bg-gray-900/50 transition">
-                    
+                {group.entries.map((entry, index) => (
+                  <div key={entry.id}>
+                    {/* Tampilkan GAP/JEDA jika ada sesi sebelumnya */}
+                    {index > 0 && (() => {
+                      const prevEntry = group.entries[index - 1]
+                      const gapSeconds = calculateGap(prevEntry.end_time, entry.start_time)
+
+                      if (gapSeconds) {
+                        return (
+                          <div className="flex items-center justify-center py-2 my-1">
+                            <div className="flex items-center gap-3 text-xs text-gray-600 bg-gray-900/30 px-4 py-1.5 rounded-full border border-gray-800">
+                              <span className="text-gray-500">⏸</span>
+                              <span>Jeda: {formatDuration(gapSeconds)}</span>
+                              <span className="text-[10px] font-mono text-gray-700">
+                                {formatClockTime(prevEntry.end_time)} — {formatClockTime(entry.start_time)}
+                              </span>
+                            </div>
+                          </div>
+                        )
+                      }
+                      return null
+                    })()}
+
+                    {/* Card Sesi */}
+                    <div className="group flex flex-col md:flex-row md:items-center justify-between py-3 px-2 rounded hover:bg-gray-900/50 transition">
+
                     {/* Bagian Kiri: Deskripsi & Rentang Jam */}
                     <div className="flex-1 mb-2 md:mb-0 pr-4">
                       {editingId === entry.id ? (
@@ -254,14 +299,14 @@ export default function HistoryPage() {
                     {/* Bagian Kanan: Durasi & Tombol Aksi (Edit/Hapus) */}
                     <div className="flex items-center justify-between md:justify-end gap-6">
                       <span className="text-sm font-mono text-gray-400">{formatDuration(entry.duration_seconds)}</span>
-                      
+
                       <div className="flex items-center gap-3 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity">
                         {editingId !== entry.id && (
-                          <button 
+                          <button
                             onClick={() => {
                               setEditingId(entry.id)
                               setEditValue(entry.description)
-                            }} 
+                            }}
                             className="text-gray-500 hover:text-white transition"
                           >
                             <Edit2 size={16} />
@@ -272,7 +317,8 @@ export default function HistoryPage() {
                         </button>
                       </div>
                     </div>
-                    
+
+                  </div>
                   </div>
                 ))}
               </div>

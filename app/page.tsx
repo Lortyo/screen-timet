@@ -35,12 +35,41 @@ export default function TimerPage() {
   const handleLogout = async () => {
     const finalSeconds = elapsedRef.current
     if (isActive && finalSeconds > 0) {
-      await supabase.from('screen_time').insert([{
-        description: 'Sesi Baru (Tersimpan otomatis saat Logout)',
-        start_time: new Date(Date.now() - finalSeconds * 1000).toISOString(),
-        end_time: new Date().toISOString(),
-        duration_seconds: finalSeconds,
-      }])
+      const endTime = new Date()
+      const startTime = new Date(endTime.getTime() - finalSeconds * 1000)
+
+      // Cek apakah melewati tengah malam
+      if (startTime.getDate() !== endTime.getDate()) {
+        // Pisahkan menjadi 2 record
+        const midnightEnd = new Date(endTime)
+        midnightEnd.setHours(0, 0, 0, 0)
+
+        // Record 1: Dari start sampai 23:59:59 hari sebelumnya
+        const firstDuration = Math.floor((midnightEnd.getTime() - startTime.getTime()) / 1000)
+        await supabase.from('screen_time').insert([{
+          description: 'Sesi Baru (Tersimpan otomatis saat Logout) - Bagian 1',
+          start_time: startTime.toISOString(),
+          end_time: new Date(midnightEnd.getTime() - 1000).toISOString(),
+          duration_seconds: firstDuration,
+        }])
+
+        // Record 2: Dari 00:00 sampai waktu logout
+        const secondDuration = Math.floor((endTime.getTime() - midnightEnd.getTime()) / 1000)
+        await supabase.from('screen_time').insert([{
+          description: 'Sesi Baru (Tersimpan otomatis saat Logout) - Bagian 2',
+          start_time: midnightEnd.toISOString(),
+          end_time: endTime.toISOString(),
+          duration_seconds: secondDuration,
+        }])
+      } else {
+        // Tidak melewati tengah malam, simpan seperti biasa
+        await supabase.from('screen_time').insert([{
+          description: 'Sesi Baru (Tersimpan otomatis saat Logout)',
+          start_time: startTime.toISOString(),
+          end_time: endTime.toISOString(),
+          duration_seconds: finalSeconds,
+        }])
+      }
     }
     await supabase.auth.signOut()
     localStorage.clear()
@@ -57,22 +86,56 @@ export default function TimerPage() {
       setIsActive(false)
       return
     }
-    
+
     // Matikan timer dan bersihkan memori di awal agar tidak looping
     setIsActive(false)
     localStorage.clear()
     setElapsedTime(0)
     setAlarmLimit(0)
 
-    const { error } = await supabase.from('screen_time').insert([{
-      description: 'Sesi Baru (Berhenti Otomatis - Laptop Sleep/Mati)',
-      start_time: new Date(endMs - seconds * 1000).toISOString(),
-      end_time: new Date(endMs).toISOString(), // Menggunakan waktu tepat SEBELUM laptop tertidur
-      duration_seconds: seconds,
-    }])
-    
-    if (!error) {
-      alert('Laptop terdeteksi Sleep atau tab ditutup. Timer telah dihentikan otomatis dan datamu berhasil disimpan!')
+    const endTime = new Date(endMs)
+    const startTime = new Date(endMs - seconds * 1000)
+
+    // Cek apakah melewati tengah malam
+    if (startTime.getDate() !== endTime.getDate()) {
+      // Pisahkan menjadi 2 record
+      const midnightEnd = new Date(endTime)
+      midnightEnd.setHours(0, 0, 0, 0) // Tengah malam hari ini (00:00)
+
+      // Record 1: Dari start sampai 23:59:59 hari sebelumnya
+      const firstDuration = Math.floor((midnightEnd.getTime() - startTime.getTime()) / 1000)
+      const { error: error1 } = await supabase.from('screen_time').insert([{
+        description: 'Sesi Baru (Berhenti Otomatis - Laptop Sleep/Mati) - Bagian 1',
+        start_time: startTime.toISOString(),
+        end_time: new Date(midnightEnd.getTime() - 1000).toISOString(), // 23:59:59
+        duration_seconds: firstDuration,
+      }])
+      if (error1) console.error(error1)
+
+      // Record 2: Dari 00:00 sampai waktu stop
+      const secondDuration = Math.floor((endTime.getTime() - midnightEnd.getTime()) / 1000)
+      const { error: error2 } = await supabase.from('screen_time').insert([{
+        description: 'Sesi Baru (Berhenti Otomatis - Laptop Sleep/Mati) - Bagian 2',
+        start_time: midnightEnd.toISOString(),
+        end_time: endTime.toISOString(),
+        duration_seconds: secondDuration,
+      }])
+
+      if (!error1 && !error2) {
+        alert('Laptop terdeteksi Sleep atau tab ditutup. Timer telah dihentikan otomatis dan datamu berhasil disimpan!')
+      }
+    } else {
+      // Tidak melewati tengah malam, simpan seperti biasa
+      const { error } = await supabase.from('screen_time').insert([{
+        description: 'Sesi Baru (Berhenti Otomatis - Laptop Sleep/Mati)',
+        start_time: startTime.toISOString(),
+        end_time: endTime.toISOString(),
+        duration_seconds: seconds,
+      }])
+
+      if (!error) {
+        alert('Laptop terdeteksi Sleep atau tab ditutup. Timer telah dihentikan otomatis dan datamu berhasil disimpan!')
+      }
     }
   }
 
@@ -189,13 +252,44 @@ export default function TimerPage() {
     localStorage.clear()
 
     if (finalSeconds > 0) {
-      const { error } = await supabase.from('screen_time').insert([{
-        description: 'Sesi Baru',
-        start_time: new Date(Date.now() - finalSeconds * 1000).toISOString(),
-        end_time: new Date().toISOString(),
-        duration_seconds: finalSeconds,
-      }])
-      if (error) console.error(error)
+      const endTime = new Date()
+      const startTime = new Date(endTime.getTime() - finalSeconds * 1000)
+
+      // Cek apakah melewati tengah malam
+      if (startTime.getDate() !== endTime.getDate()) {
+        // Pisahkan menjadi 2 record
+        const midnightEnd = new Date(endTime)
+        midnightEnd.setHours(0, 0, 0, 0) // Tengah malam hari ini (00:00)
+
+        // Record 1: Dari start sampai 23:59:59 hari sebelumnya
+        const firstDuration = Math.floor((midnightEnd.getTime() - startTime.getTime()) / 1000)
+        const { error: error1 } = await supabase.from('screen_time').insert([{
+          description: 'Sesi Baru (Bagian 1)',
+          start_time: startTime.toISOString(),
+          end_time: new Date(midnightEnd.getTime() - 1000).toISOString(), // 23:59:59
+          duration_seconds: firstDuration,
+        }])
+        if (error1) console.error(error1)
+
+        // Record 2: Dari 00:00 sampai waktu stop
+        const secondDuration = Math.floor((endTime.getTime() - midnightEnd.getTime()) / 1000)
+        const { error: error2 } = await supabase.from('screen_time').insert([{
+          description: 'Sesi Baru (Bagian 2)',
+          start_time: midnightEnd.toISOString(),
+          end_time: endTime.toISOString(),
+          duration_seconds: secondDuration,
+        }])
+        if (error2) console.error(error2)
+      } else {
+        // Tidak melewati tengah malam, simpan seperti biasa
+        const { error } = await supabase.from('screen_time').insert([{
+          description: 'Sesi Baru',
+          start_time: startTime.toISOString(),
+          end_time: endTime.toISOString(),
+          duration_seconds: finalSeconds,
+        }])
+        if (error) console.error(error)
+      }
     }
     setLoading(false)
     setElapsedTime(0)
